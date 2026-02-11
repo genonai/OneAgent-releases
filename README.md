@@ -6,16 +6,16 @@
 
 **[최신 릴리즈 다운로드 →](https://github.com/genonai/OneAgent-releases/releases/latest)**
 
-| 플랫폼 | 파일 | 용도 |
-|---|---|---|
-| macOS (Apple Silicon) | `OneAgent-*-arm64.dmg` | 신규 설치 |
+| 플랫폼                | 파일                       | 용도          |
+| --------------------- | -------------------------- | ------------- |
+| macOS (Apple Silicon) | `OneAgent-*-arm64.dmg`     | 신규 설치     |
 | macOS (Apple Silicon) | `OneAgent-*-arm64-mac.zip` | 자동 업데이트 |
 
 ## 설치 방법
 
 1. [Releases](https://github.com/genonai/OneAgent-releases/releases) 페이지에서 최신 `.dmg` 파일 다운로드
 2. DMG 파일을 열고 OneAgent를 Applications 폴더로 드래그
-3. 처음 실행 시 "확인되지 않은 개발자" 경고가 나오면: 시스템 설정 → 개인정보 보호 및 보안 → "확인 없이 열기" 클릭
+3. 처음 실행 시 "인터넷에서 다운로드한 앱입니다" 확인 다이얼로그가 나오면 **"열기"** 클릭 (Apple 공증 완료된 앱이므로 정상 동작합니다)
 
 ## 자동 업데이트
 
