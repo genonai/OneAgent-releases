@@ -59,19 +59,14 @@ jobs:
         run: |
           set -e
           cd /tmp/scan
-          # 패턴: provider prefix + 일반 ENV/Bearer 형태 + GH PAT.
-          # 의도적으로 알려진 노출 키 suffix 는 미포함 (workflow file 자체가 public).
           PATTERNS='tvly-[A-Za-z0-9_-]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{30,}|(GENOS|TAVILY|KOMIPO|OPENAI|ANTHROPIC|OPENROUTER|GOOGLE|GROQ|AZURE)_API_KEY[[:space:]]*[=:][[:space:]]*[A-Za-z0-9_./-]{16,}|_BEARER_TOKEN[[:space:]]*[=:][[:space:]]*[A-Za-z0-9._-]{20,}|github_pat_[A-Za-z0-9_]{60,}|ghp_[A-Za-z0-9]{30,}'
-
           : > /tmp/leaked-files.txt
           : > /tmp/leaked-redacted.txt
-
           if ! ls -1 2>/dev/null | grep -q .; then
             echo "leaked=false" >> "$GITHUB_OUTPUT"
-            echo "no-assets to scan; passing"
+            echo "no assets to scan; passing"
             exit 0
           fi
-
           for f in *; do
             [ -f "$f" ] || continue
             case "$f" in
@@ -89,14 +84,13 @@ jobs:
               } >> /tmp/leaked-redacted.txt
             fi
           done
-
           if [ -s /tmp/leaked-files.txt ]; then
             echo "leaked=true" >> "$GITHUB_OUTPUT"
             echo "::warning::leaked secrets detected — quarantine step will run"
             cat /tmp/leaked-redacted.txt
           else
             echo "leaked=false" >> "$GITHUB_OUTPUT"
-            echo "✓ No leaked secrets detected"
+            echo "No leaked secrets detected"
           fi
 
       - name: Quarantine release on detection
@@ -111,18 +105,7 @@ jobs:
             echo "deleting asset: $f"
             gh release delete-asset "$TAG" "$f" --repo "$GITHUB_REPOSITORY" --yes || true
           done < /tmp/leaked-files.txt
-
-          NOTICE=$(cat <<EOF
-> 🚨 AUTOMATED SECURITY QUARANTINE
-
-\`release-key-scan\` workflow detected hard-coded secret patterns in one or
-more assets of this release and removed them automatically. The exposed values
-must be considered compromised — rotate the affected keys immediately, review
-the source build, and re-publish a clean release.
-
-Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
-EOF
-)
+          NOTICE=$(printf '> AUTOMATED SECURITY QUARANTINE\n>\n> `release-key-scan` workflow detected hard-coded secret patterns in one or more assets of this release and removed them automatically. The exposed values must be considered compromised — rotate the affected keys immediately, review the source build, and re-publish a clean release.\n>\n> Workflow run: %s/%s/actions/runs/%s' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes "$NOTICE"
           echo "Quarantine applied; failing workflow."
           exit 1
