@@ -1,0 +1,128 @@
+name: release-key-scan
+
+# 릴리즈 자산에서 평문 시크릿 패턴이 검출되면 자동 격리(asset 삭제 + body 공지) + workflow fail.
+# 우발적 키 임베드 차단용 안전망. 회전과 별개의 defense-in-depth.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to scan (empty = latest)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Resolve target tag
+        id: target
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -e
+          if [ -n "$EVENT_TAG" ]; then
+            TAG="$EVENT_TAG"
+          elif [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 | awk -F'\t' '{print $3}')
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Target tag: $TAG"
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          set -e
+          mkdir -p /tmp/scan
+          cd /tmp/scan
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --skip-existing || true
+          if ls -1 2>/dev/null | grep -q .; then
+            ls -lh
+          else
+            echo "no assets in release"
+          fi
+
+      - name: Scan for hard-coded secrets
+        id: scan
+        run: |
+          set -e
+          cd /tmp/scan
+          # 패턴: provider prefix + 일반 ENV/Bearer 형태 + GH PAT.
+          # 의도적으로 알려진 노출 키 suffix 는 미포함 (workflow file 자체가 public).
+          PATTERNS='tvly-[A-Za-z0-9_-]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{30,}|(GENOS|TAVILY|KOMIPO|OPENAI|ANTHROPIC|OPENROUTER|GOOGLE|GROQ|AZURE)_API_KEY[[:space:]]*[=:][[:space:]]*[A-Za-z0-9_./-]{16,}|_BEARER_TOKEN[[:space:]]*[=:][[:space:]]*[A-Za-z0-9._-]{20,}|github_pat_[A-Za-z0-9_]{60,}|ghp_[A-Za-z0-9]{30,}'
+
+          : > /tmp/leaked-files.txt
+          : > /tmp/leaked-redacted.txt
+
+          if ! ls -1 2>/dev/null | grep -q .; then
+            echo "leaked=false" >> "$GITHUB_OUTPUT"
+            echo "no-assets to scan; passing"
+            exit 0
+          fi
+
+          for f in *; do
+            [ -f "$f" ] || continue
+            case "$f" in
+              *.yml|*.yaml|*.json|*.txt|*.md|latest*)
+                HITS=$(grep -E "$PATTERNS" "$f" 2>/dev/null || true) ;;
+              *)
+                HITS=$(strings -a -n 12 "$f" 2>/dev/null | grep -E "$PATTERNS" 2>/dev/null | head -3 || true) ;;
+            esac
+            if [ -n "$HITS" ]; then
+              echo "::error file=$f::secret pattern detected"
+              echo "$f" >> /tmp/leaked-files.txt
+              {
+                echo "=== $f ==="
+                echo "$HITS" | sed -E 's#(=|:[[:space:]]?)[A-Za-z0-9_./+-]+#\1***REDACTED***#g' | head -3
+              } >> /tmp/leaked-redacted.txt
+            fi
+          done
+
+          if [ -s /tmp/leaked-files.txt ]; then
+            echo "leaked=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::leaked secrets detected — quarantine step will run"
+            cat /tmp/leaked-redacted.txt
+          else
+            echo "leaked=false" >> "$GITHUB_OUTPUT"
+            echo "✓ No leaked secrets detected"
+          fi
+
+      - name: Quarantine release on detection
+        if: steps.scan.outputs.leaked == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          set -e
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            echo "deleting asset: $f"
+            gh release delete-asset "$TAG" "$f" --repo "$GITHUB_REPOSITORY" --yes || true
+          done < /tmp/leaked-files.txt
+
+          NOTICE=$(cat <<EOF
+> 🚨 AUTOMATED SECURITY QUARANTINE
+
+\`release-key-scan\` workflow detected hard-coded secret patterns in one or
+more assets of this release and removed them automatically. The exposed values
+must be considered compromised — rotate the affected keys immediately, review
+the source build, and re-publish a clean release.
+
+Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+EOF
+)
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes "$NOTICE"
+          echo "Quarantine applied; failing workflow."
+          exit 1
